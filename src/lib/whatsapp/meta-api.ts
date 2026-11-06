@@ -10,7 +10,9 @@
  */
 
 import { isBusinessScopedUserId } from './wa-identity'
+import { INTERACTIVE_LIMITS } from './interactive-limits'
 import { getT } from '@/lib/i18n/translate'
+import { resolveSendableMediaUrl } from '@/lib/storage/media-links'
 
 const ti = getT('Validation.interactive')
 
@@ -453,12 +455,16 @@ export async function sendMediaMessage(
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
+  // A stored reference (chat-media / flow-media) is exchanged for a
+  // short-lived signed URL so the bucket can be private; external links
+  // pass through untouched. See lib/storage/media-links.ts.
+  const sendableLink = await resolveSendableMediaUrl(link)
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
   // Audio accepts neither caption nor filename per Meta's spec — adding
   // either yields a 400. image/video/document accept a caption; only
   // document accepts a filename.
-  const media: Record<string, unknown> = { link }
+  const media: Record<string, unknown> = { link: sendableLink }
   if (caption && kind !== 'audio') media.caption = caption
   if (kind === 'document' && filename) media.filename = filename
 
@@ -554,13 +560,24 @@ export async function sendTemplateMessage(
     language: { code: language },
   }
 
+  // Header media may be a stored chat-media reference (the template's
+  // sample URL, or a per-send override). Resolve it at send time so the
+  // bucket can be private; an external URL comes back unchanged. Skipped
+  // when the caller already has a real Meta media id.
+  const headerMediaSource =
+    messageParams?.headerMediaUrl ?? template?.header_media_url ?? null
+  const headerMediaUrl =
+    headerMediaSource && !messageParams?.headerMediaId
+      ? await resolveSendableMediaUrl(headerMediaSource)
+      : messageParams?.headerMediaUrl
+
   if (template) {
     const components = buildSendComponents(template, {
       // Legacy callers pass body values in `params`; fold them into
       // `messageParams.body` so the new path covers them too.
       body: messageParams?.body ?? params,
       headerText: messageParams?.headerText,
-      headerMediaUrl: messageParams?.headerMediaUrl,
+      headerMediaUrl,
       headerMediaId: messageParams?.headerMediaId,
       buttonParams: messageParams?.buttonParams,
     })
@@ -921,23 +938,11 @@ export async function sendTypingIndicator(
 // developer-facing error rather than a customer-facing one.
 
 /**
- * Meta limits for interactive messages, hard-coded so violations
- * fail at build/save time rather than as a 400 from the Meta API
- * mid-conversation. See:
- *   https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-reply-buttons-messages
- *   https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-list-messages
+ * Meta limits for interactive messages, re-exported from their own
+ * module so client components can import them without pulling this
+ * file's server-only dependencies (env + media-link resolver).
  */
-export const INTERACTIVE_LIMITS = {
-  maxButtons: 3,
-  buttonTitleMaxLength: 20,
-  maxListSections: 10,
-  maxListRowsTotal: 10,
-  listRowTitleMaxLength: 24,
-  listRowDescriptionMaxLength: 72,
-  bodyMaxLength: 1024,
-  footerMaxLength: 60,
-  headerTextMaxLength: 60,
-} as const
+export { INTERACTIVE_LIMITS }
 
 export interface InteractiveButton {
   /** Stable id sent back in the webhook when tapped (≤ 256 chars). */

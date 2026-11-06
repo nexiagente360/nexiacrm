@@ -117,6 +117,23 @@ describe('validateHeader', () => {
       }),
     ).toThrow(/valid URL/);
   });
+  it('image header accepts an internal media proxy path', () => {
+    expect(() =>
+      validateHeader({
+        header_type: 'image',
+        header_media_url: '/api/media/chat-media/account-abc/header.png',
+      }),
+    ).not.toThrow();
+  });
+  it('image header accepts a chat-media Storage URL', () => {
+    expect(() =>
+      validateHeader({
+        header_type: 'image',
+        header_media_url:
+          'https://proj.supabase.co/storage/v1/object/public/chat-media/account-abc/header.png',
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe('validateButtons', () => {

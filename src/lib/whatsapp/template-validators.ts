@@ -21,6 +21,7 @@ import type {
   TemplateSampleValues,
 } from '@/types';
 import { getT } from '@/lib/i18n/translate';
+import { isInternalMediaRef } from '@/lib/storage/media-ref';
 
 const t = getT('Validation.templates');
 
@@ -186,13 +187,19 @@ export function validateHeader(
     );
   }
   if (header_media_url) {
-    try {
-      const u = new URL(header_media_url);
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') {
-        throw new Error(t('headerMediaUrlScheme'));
+    // A reference into one of our buckets (proxy path or Storage URL) is
+    // a valid sample: the submit handler reads the bytes with the service
+    // role instead of fetching them over HTTP. Everything else must be an
+    // absolute http(s) URL.
+    if (!isInternalMediaRef(header_media_url)) {
+      try {
+        const u = new URL(header_media_url);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+          throw new Error(t('headerMediaUrlScheme'));
+        }
+      } catch {
+        throw new Error(t('headerMediaUrlInvalid'));
       }
-    } catch {
-      throw new Error(t('headerMediaUrlInvalid'));
     }
   }
   return { variableCount: 0 };

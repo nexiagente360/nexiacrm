@@ -2,6 +2,8 @@ import { uploadResumableMedia } from '@/lib/whatsapp/meta-api'
 import { MEDIA_HEADER_SPECS, isMediaHeaderKind } from '@/lib/whatsapp/media-header-types'
 import type { TemplatePayload } from '@/lib/whatsapp/template-validators'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import { parseMediaRef } from '@/lib/storage/media-ref'
+import { readMediaObject } from '@/lib/storage/media-links'
 import { getT } from '@/lib/i18n/translate'
 
 /**
@@ -25,6 +27,10 @@ const t = getT('Validation.templates')
 // host, across all three media kinds — see the guard comment below.
 const unreachableMessage = () => t('headerUrlUnreachable')
 
+function baseMimeType(value: string | null): string {
+  return (value || '').split(';')[0].trim().toLowerCase()
+}
+
 export async function ensureMediaHeaderHandle(
   payload: TemplatePayload,
   accessToken: string,
@@ -41,40 +47,53 @@ export async function ensureMediaHeaderHandle(
     throw new Error(t('metaAppIdRequired'))
   }
 
-  // SSRF guard: `header_media_url` is caller-supplied (any authenticated
-  // member can submit a template) and the fetch below happens server-side,
-  // so refuse any destination that resolves to a private / loopback /
-  // link-local / reserved address. Same guard as the two other
-  // outbound-fetch call sites (see lib/webhooks/ssrf.ts) — matching the
-  // unreachable-host message keeps the failure from being an oracle.
-  if (!(await isDeliverableUrl(payload.header_media_url))) {
-    throw new Error(unreachableMessage())
+  // Two possible sources for the sample bytes:
+  //
+  //   - An object in one of our buckets (uploaded through the template
+  //     form, or a proxy/public URL after the R2 backfill). Read it with
+  //     the service role: going over HTTP would break once the buckets
+  //     are private, and would re-enter the SSRF guard for a URL we
+  //     minted ourselves.
+  //   - Anything else: a caller-pasted public link, fetched with the
+  //     SSRF guard below (matching the failure message keeps it from
+  //     becoming an oracle).
+  let bytes: Uint8Array
+  let contentType: string
+
+  const ref = parseMediaRef(payload.header_media_url)
+  if (ref) {
+    const object = await readMediaObject(ref.bucket, ref.path)
+    if (!object) throw new Error(unreachableMessage())
+    bytes = object.bytes
+    contentType = baseMimeType(object.contentType)
+  } else {
+    if (!(await isDeliverableUrl(payload.header_media_url))) {
+      throw new Error(unreachableMessage())
+    }
+
+    let res: Response
+    try {
+      res = await fetch(payload.header_media_url, {
+        // Do NOT follow redirects — a public URL could 3xx-bounce to an
+        // internal address, defeating the guard above. Bound the request
+        // so a hung host can't tie up the template-submit handler.
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      })
+    } catch {
+      throw new Error(unreachableMessage())
+    }
+    if (!res.ok) {
+      throw new Error(t('headerUrlStatus', { kind, status: res.status }))
+    }
+    bytes = new Uint8Array(await res.arrayBuffer())
+    contentType = baseMimeType(res.headers.get('content-type'))
   }
 
-  // Fetch the sample bytes (works for our uploaded chat-media URL and for
-  // a manually-pasted public link).
-  let res: Response
-  try {
-    res = await fetch(payload.header_media_url, {
-      // Do NOT follow redirects — a public URL could 3xx-bounce to an
-      // internal address, defeating the guard above. Bound the request so
-      // a hung host can't tie up the template-submit handler.
-      redirect: 'manual',
-      signal: AbortSignal.timeout(10_000),
-    })
-  } catch {
-    throw new Error(unreachableMessage())
-  }
-  if (!res.ok) {
-    throw new Error(t('headerUrlStatus', { kind, status: res.status }))
-  }
-
-  const contentType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
   if (contentType && !spec.mimeTypes.includes(contentType)) {
     throw new Error(t('headerWrongType', { kind, formats: spec.formats, contentType }))
   }
 
-  const bytes = new Uint8Array(await res.arrayBuffer())
   if (bytes.byteLength === 0) {
     throw new Error(t('headerEmpty', { kind }))
   }

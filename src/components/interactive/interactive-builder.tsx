@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { slugify } from "@/components/flows/shared";
 import { getT } from "@/lib/i18n/translate";
-import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
+import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/interactive-limits";
 import {
   validateInteractivePayload,
   type InteractiveButtonsPayload,

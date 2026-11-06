@@ -11,9 +11,18 @@ vi.mock('@/lib/webhooks/ssrf', () => ({
   isDeliverableUrl: vi.fn(async () => true),
 }));
 
+// References into our own buckets are read with the service role, not HTTP.
+vi.mock('@/lib/storage/media-links', () => ({
+  readMediaObject: vi.fn(async () => ({
+    bytes: new Uint8Array(2048),
+    contentType: 'image/jpeg',
+  })),
+}));
+
 import { ensureMediaHeaderHandle } from './template-header-handle';
 import { uploadResumableMedia } from './meta-api';
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
+import { readMediaObject } from '@/lib/storage/media-links';
 import type { TemplatePayload } from './template-validators';
 
 const MB = 1024 * 1024;
@@ -293,5 +302,67 @@ describe('ensureMediaHeaderHandle', () => {
 
     const init = (fetchSpy.mock.calls[0] as unknown[])[1] as RequestInit;
     expect(init).toMatchObject({ redirect: 'manual' });
+  });
+});
+
+describe('ensureMediaHeaderHandle — references inside our buckets', () => {
+  beforeEach(() => {
+    vi.mocked(uploadResumableMedia).mockClear();
+    vi.mocked(readMediaObject).mockClear();
+    vi.mocked(readMediaObject).mockResolvedValue({
+      bytes: new Uint8Array(2048),
+      contentType: 'image/jpeg',
+    });
+    vi.mocked(isDeliverableUrl).mockClear();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it('reads a proxy path with the service role instead of fetching it', async () => {
+    vi.stubEnv('META_APP_ID', 'app-1');
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const p = payload({
+      header_media_url: '/api/media/chat-media/account-abc/header.jpg',
+    });
+    await ensureMediaHeaderHandle(p, 'tok');
+
+    expect(readMediaObject).toHaveBeenCalledWith('chat-media', 'account-abc/header.jpg');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(isDeliverableUrl).not.toHaveBeenCalled();
+    expect(p.header_handle).toBe('HANDLE123');
+    expect(uploadedAs().mimeType).toBe('image/jpeg');
+  });
+
+  it('reads a legacy public Storage URL the same way', async () => {
+    vi.stubEnv('META_APP_ID', 'app-1');
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const p = payload({
+      header_media_url:
+        'https://proj.supabase.co/storage/v1/object/public/chat-media/account-abc/header.jpg',
+    });
+    await ensureMediaHeaderHandle(p, 'tok');
+
+    expect(readMediaObject).toHaveBeenCalledWith('chat-media', 'account-abc/header.jpg');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(p.header_handle).toBe('HANDLE123');
+  });
+
+  it('throws the same unreachable error when the object is missing', async () => {
+    vi.stubEnv('META_APP_ID', 'app-1');
+    vi.mocked(readMediaObject).mockResolvedValueOnce(null);
+
+    const p = payload({
+      header_media_url: '/api/media/chat-media/account-abc/missing.jpg',
+    });
+
+    await expect(ensureMediaHeaderHandle(p, 'tok')).rejects.toThrow(
+      /Could not fetch the header media URL/,
+    );
   });
 });

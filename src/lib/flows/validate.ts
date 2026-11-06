@@ -23,7 +23,7 @@
  * `node_key`; trigger-scoped use `scope: 'trigger'`.
  */
 
-import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
+import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/interactive-limits";
 import { getT } from "@/lib/i18n/translate";
 import { AUTO_ADVANCING_NODE_TYPES, MAX_AUTO_ADVANCING_CHAIN } from "./types";
 
