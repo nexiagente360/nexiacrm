@@ -163,6 +163,32 @@ BEGIN
     RAISE EXCEPTION 'anon can execute dashboard_overview — migration 059 grants are wrong';
   END IF;
 
+  -- M-04 fase 1 (migration 060): the two columns that would let a
+  -- dashboard JWT replay credentials offline must be server-only.
+  IF has_column_privilege('authenticated', 'public.api_keys', 'key_hash', 'SELECT')
+     OR has_column_privilege('anon', 'public.api_keys', 'key_hash', 'SELECT')
+  THEN
+    RAISE EXCEPTION
+      'authenticated/anon can still SELECT api_keys.key_hash — migration 060 did not apply';
+  END IF;
+  IF has_column_privilege('authenticated', 'public.webhook_endpoints', 'secret', 'SELECT')
+     OR has_column_privilege('anon', 'public.webhook_endpoints', 'secret', 'SELECT')
+  THEN
+    RAISE EXCEPTION
+      'authenticated/anon can still SELECT webhook_endpoints.secret — migration 060 did not apply';
+  END IF;
+
+  -- ...and the column grants must not have over-revoked: the management
+  -- UI and the public API select these explicitly.
+  IF NOT has_column_privilege('authenticated', 'public.api_keys', 'key_prefix', 'SELECT') THEN
+    RAISE EXCEPTION
+      'authenticated lost SELECT on api_keys.key_prefix — migration 060 grant list is wrong';
+  END IF;
+  IF NOT has_column_privilege('authenticated', 'public.webhook_endpoints', 'url', 'SELECT') THEN
+    RAISE EXCEPTION
+      'authenticated lost SELECT on webhook_endpoints.url — migration 060 grant list is wrong';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

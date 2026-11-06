@@ -188,24 +188,37 @@ export function WhatsAppConfig() {
       // Clear any stale probe result when reloading the row.
       setRegistrationProbe(null);
 
-      // Then verify health via the API (decrypts token + pings Meta)
+      // Then verify health via the API (decrypts token + pings Meta).
+      // That probe is admin-only (M-03): a viewer/agent gets a 403, which
+      // is NOT a connection failure — mirror the stored `status` instead
+      // of flipping the badge to "disconnected" for those roles.
       if (data) {
         try {
           const res = await fetch('/api/whatsapp/config', { method: 'GET' });
-          const payload = await res.json();
-
-          if (payload.connected) {
-            setConnectionStatus('connected');
+          if (!res.ok) {
+            setConnectionStatus(
+              data.status === 'connected' ? 'connected' : 'disconnected',
+            );
             setResetReason(null);
             setStatusMessage('');
             setStatusMeta(null);
-            setWabaSubscription(payload.waba_subscription ?? null);
-          } else {
-            setConnectionStatus('disconnected');
-            setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
-            setStatusMessage(payload.message || '');
-            setStatusMeta(payload.meta ?? null);
             setWabaSubscription(null);
+          } else {
+            const payload = await res.json();
+
+            if (payload.connected) {
+              setConnectionStatus('connected');
+              setResetReason(null);
+              setStatusMessage('');
+              setStatusMeta(null);
+              setWabaSubscription(payload.waba_subscription ?? null);
+            } else {
+              setConnectionStatus('disconnected');
+              setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
+              setStatusMessage(payload.message || '');
+              setStatusMeta(payload.meta ?? null);
+              setWabaSubscription(null);
+            }
           }
         } catch (err) {
           console.error('Health check failed:', err);
@@ -392,6 +405,12 @@ export function WhatsAppConfig() {
     try {
       setTesting(true);
       const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+      if (!res.ok) {
+        // Admin-only probe (M-03). The button is disabled for other roles;
+        // this keeps a stale tab from surfacing a confusing "failed" toast.
+        toast.error(t('apiConnectionFailed'));
+        return;
+      }
       const payload = await res.json();
 
       if (payload.connected) {
@@ -423,12 +442,19 @@ export function WhatsAppConfig() {
   }
 
   async function handleVerifyRegistration() {
+    // Admin-only endpoint (M-03); the button is disabled for other roles,
+    // but guard the handler too so a stale click can't fire a 403.
+    if (!canEditSettings) return;
     setVerifyingRegistration(true);
     setRegistrationProbe(null);
     try {
       const res = await fetch('/api/whatsapp/config/verify-registration', {
         method: 'GET',
       });
+      if (!res.ok) {
+        toast.error(t('verifyEndpointUnreachable'));
+        return;
+      }
       const data = (await res.json()) as RegistrationProbe;
       setRegistrationProbe(data);
       if (data.live) {
@@ -670,7 +696,7 @@ export function WhatsAppConfig() {
                 variant="outline"
                 size="sm"
                 onClick={handleVerifyRegistration}
-                disabled={verifyingRegistration}
+                disabled={verifyingRegistration || !canEditSettings}
                 className="border-border bg-transparent text-foreground hover:bg-muted h-7"
               >
                 {verifyingRegistration ? (
@@ -920,7 +946,7 @@ export function WhatsAppConfig() {
         <div className="flex flex-wrap gap-3">
           <Button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !canEditSettings}
             className="bg-primary hover:bg-primary/90 text-primary-foreground"
           >
             {saving ? (
@@ -935,7 +961,7 @@ export function WhatsAppConfig() {
           <Button
             variant="outline"
             onClick={handleTestConnection}
-            disabled={testing || !config}
+            disabled={testing || !config || !canEditSettings}
             className="border-border text-muted-foreground hover:text-foreground hover:bg-muted"
           >
             {testing ? (

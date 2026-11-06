@@ -253,8 +253,32 @@ describe('DELETE /api/whatsapp/config', () => {
 })
 
 describe('GET /api/whatsapp/config', () => {
-  it('stays readable for a viewer and never returns the token', async () => {
-    callerRole = 'viewer'
+  it.each(['viewer', 'agent'])(
+    'refuses the %s role before any Meta call',
+    async (role) => {
+      callerRole = role
+      storedConfig = STORED_CONFIG
+
+      const res = await GET()
+
+      expect(res.status).toBe(403)
+      expect(metaCallCount()).toBe(0)
+      expect(configInserts).toHaveLength(0)
+      expect(configUpdates).toHaveLength(0)
+    },
+  )
+
+  it('answers 401 without a session', async () => {
+    signedIn = false
+
+    const res = await GET()
+
+    expect(res.status).toBe(401)
+    expect(metaCallCount()).toBe(0)
+  })
+
+  it('stays readable for an admin and never returns the token', async () => {
+    callerRole = 'admin'
     storedConfig = STORED_CONFIG
 
     const res = await GET()

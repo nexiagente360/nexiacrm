@@ -122,15 +122,23 @@ export function SettingsOverview({
       const [row, health] = await Promise.allSettled([
         supabase
           .from('whatsapp_config')
-          .select('phone_number_id')
+          .select('phone_number_id, status')
           .eq('account_id', acctId)
           .maybeSingle(),
-        fetch('/api/whatsapp/config', { cache: 'no-store' }).then((r) => r.json()),
+        // Live probe — admin-only (M-03), because it decrypts the Meta
+        // token and spends it on outbound Graph calls. A 403 here is not
+        // an error: fall back to the stored `status` column so the tile
+        // keeps telling the truth for viewers/agents.
+        fetch('/api/whatsapp/config', { cache: 'no-store' }).then((r) =>
+          r.ok ? r.json() : null,
+        ),
       ]);
       if (cancelled) return;
+      const rowData = row.status === 'fulfilled' ? row.value.data : null;
+      const live = health.status === 'fulfilled' ? health.value : null;
       setWhatsapp({
-        configured: row.status === 'fulfilled' && !!row.value.data?.phone_number_id,
-        connected: health.status === 'fulfilled' && !!health.value?.connected,
+        configured: !!rowData?.phone_number_id,
+        connected: live ? !!live.connected : rowData?.status === 'connected',
       });
       setWhatsappLoading(false);
     })();

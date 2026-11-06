@@ -9,6 +9,30 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [Unreleased]
+
+### Security
+
+- **WhatsApp configuration reads are admin-only.** `GET /api/whatsapp/config`
+  and `GET /api/whatsapp/config/verify-registration` accepted any member,
+  yet both decrypt the account's Meta token and spend it on outbound Graph
+  calls. They now require the `admin` role, like the `POST`/`DELETE` they
+  sit next to. The Settings pages fall back to the stored `status` column
+  when the probe is denied, and the admin-only buttons (save, test,
+  verify, mirror-media toggle) are disabled for viewers and agents.
+- **API-key hashes and webhook signing secrets are no longer readable by
+  dashboard users.** `api_keys.key_hash` and `webhook_endpoints.secret`
+  are only consumed server-side (service role). The `authenticated` role
+  now has explicit column grants that exclude both, so a viewer/agent JWT
+  can no longer pull that material straight from PostgREST.
+
+> **Migration required:** apply
+> `supabase/migrations/060_revoke_secret_columns_phase1.sql`
+> (revokes table-level `SELECT` on `api_keys` / `webhook_endpoints` from
+> `anon` and `authenticated`, then re-grants the non-secret columns).
+> `ai_configs` and `whatsapp_config` keep their current grants — fases 2
+> y 3 del plan.
+
 ## [0.8.1] — 2026-07-10
 
 Fixes inbound chats fragmenting into multiple threads for the same
