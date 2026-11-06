@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import {
+  ForbiddenError,
+  UnauthorizedError,
+  requireRole,
+  toErrorResponse,
+} from '@/lib/auth/account'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
@@ -8,6 +13,14 @@ import { mediaProxyHeaders } from '@/lib/media/proxy-response-headers'
 
 const t = getT('Api')
 
+/**
+ * Meta media ids are numeric — the id is spliced straight into the Graph
+ * API path (`/MEDIA_ID`), so a value containing `/`, `?` or `..` would
+ * rewrite the request while still carrying the account's access token.
+ * Only a plain numeric id is allowed through.
+ */
+const MEDIA_ID_PATTERN = /^\d{6,32}$/
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ mediaId: string }> }
@@ -15,48 +28,25 @@ export async function GET(
   try {
     const { mediaId } = await params
 
-    if (!mediaId) {
+    if (!mediaId || !MEDIA_ID_PATTERN.test(mediaId)) {
       return NextResponse.json(
         { error: t('media.idRequired') },
         { status: 400 }
       )
     }
 
-    const supabase = await createClient()
+    // Proxying a customer attachment is agent work — a `viewer` is
+    // read-only on conversations and must not pull media bytes. The
+    // returned client is RLS-scoped to the caller, and accountId comes
+    // from the same profile row the old inline lookup read.
+    const { supabase, accountId, userId } = await requireRole('agent')
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: t('common.unauthorized') },
-        { status: 401 }
-      )
-    }
-
-    const limit = checkRateLimit(`whatsapp-media:${user.id}`, RATE_LIMITS.whatsappMedia)
+    const limit = checkRateLimit(`whatsapp-media:${userId}`, RATE_LIMITS.whatsappMedia)
     if (!limit.success) return rateLimitResponse(limit)
 
-    // Resolve the caller's account_id — whatsapp_config is one-per-
-    // account post-multi-user, so a teammate fetching media for a
-    // conversation in the shared inbox needs the account's config,
-    // not their personal (non-existent) row.
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('account_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    const accountId = profile?.account_id as string | undefined
-    if (!accountId) {
-      return NextResponse.json(
-        { error: t('common.profileNotLinked') },
-        { status: 403 },
-      )
-    }
-
-    // Fetch and decrypt WhatsApp config
+    // whatsapp_config is one-per-account post-multi-user, so a teammate
+    // fetching media for a conversation in the shared inbox needs the
+    // account's config, not their personal (non-existent) row.
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
       .select('*')
@@ -86,6 +76,11 @@ export async function GET(
       headers: mediaProxyHeaders(mediaId, contentType || mediaInfo.mimeType),
     })
   } catch (error) {
+    // Auth failures carry their own status (401/403) — folding them into
+    // the generic 500 would disguise an authorization denial as an outage.
+    if (error instanceof UnauthorizedError || error instanceof ForbiddenError) {
+      return toErrorResponse(error)
+    }
     console.error('Error in WhatsApp media GET:', error)
     return NextResponse.json(
       { error: t('media.fetchFailed') },

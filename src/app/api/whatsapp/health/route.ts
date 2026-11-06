@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getCurrentAccount, toErrorResponse } from '@/lib/auth/account'
+import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { getPhoneNumberHealth } from '@/lib/whatsapp/meta-api'
 import {
@@ -23,7 +23,10 @@ const EMPTY: Omit<PhoneHealth, 'state'> = {
 
 export async function GET() {
   try {
-    const { supabase, accountId, userId } = await getCurrentAccount()
+    // A phone-number health probe spends the account's Meta token on an
+    // outbound API call — agent work. A `viewer` is read-only on the
+    // inbox and has no reason to trigger it.
+    const { supabase, accountId, userId } = await requireRole('agent')
 
     const limit = checkRateLimit(`whatsapp-health:${userId}`, RATE_LIMITS.whatsappHealth)
     if (!limit.success) return rateLimitResponse(limit)

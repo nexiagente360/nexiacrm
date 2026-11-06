@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const h = vi.hoisted(() => ({
-  user: { id: 'user-1' } as { id: string } | null,
+  /** What requireRole sees: a null role means unauthenticated. */
+  role: 'agent' as 'agent' | 'viewer' | null,
   accountId: 'acc-1' as string | null,
   downloadContentType: 'image/jpeg',
   metaMimeType: 'image/jpeg',
@@ -18,27 +19,44 @@ vi.mock('next/server', () => ({
   },
 }))
 
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: async () => ({
-    auth: {
-      getUser: async () => ({ data: { user: h.user }, error: null }),
-    },
-    from(table: string) {
-      const chain = {
-        select: () => chain,
-        eq: () => chain,
-        maybeSingle: async () => ({
-          data: table === 'profiles' && h.accountId ? { account_id: h.accountId } : null,
-        }),
-        single: async () => ({
-          data: table === 'whatsapp_config' ? { access_token: 'enc-token' } : null,
-          error: null,
-        }),
+// The route gates on requireRole('agent') and reads whatsapp_config
+// through the client that call returns, so stub the account context
+// rather than Supabase itself.
+vi.mock('@/lib/auth/account', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/auth/account')>(
+    '@/lib/auth/account'
+  )
+  return {
+    ...actual,
+    requireRole: async (min: string) => {
+      if (!h.role) throw new actual.UnauthorizedError()
+      if (!h.accountId) throw new actual.ForbiddenError()
+      if (min !== 'viewer' && h.role === 'viewer') {
+        throw new actual.ForbiddenError('Insufficient role')
       }
-      return chain
+      const supabase = {
+        from: () => {
+          const chain = {
+            select: () => chain,
+            eq: () => chain,
+            single: async () => ({
+              data: { access_token: 'enc-token' },
+              error: null,
+            }),
+          }
+          return chain
+        },
+      }
+      return {
+        userId: 'user-1',
+        accountId: h.accountId,
+        role: h.role,
+        account: { id: h.accountId, name: 'Acme' },
+        supabase,
+      }
     },
-  }),
-}))
+  }
+})
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
   decrypt: (value: string) => `plain-${value}`,
@@ -71,7 +89,7 @@ function call(mediaId = '1234567890') {
 }
 
 beforeEach(() => {
-  h.user = { id: 'user-1' }
+  h.role = 'agent'
   h.accountId = 'acc-1'
   h.downloadContentType = 'image/jpeg'
   h.metaMimeType = 'image/jpeg'
@@ -107,9 +125,9 @@ describe('GET /api/whatsapp/media/[mediaId]', () => {
 
   it('names a PDF download after the media id', async () => {
     h.downloadContentType = 'application/pdf'
-    const res = await call('42')
+    const res = await call('123456')
     expect(res.headers.get('content-type')).toBe('application/pdf')
-    expect(res.headers.get('content-disposition')).toBe('attachment; filename="42.pdf"')
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="123456.pdf"')
   })
 
   it('never lets a shared cache store the response', async () => {
@@ -120,7 +138,7 @@ describe('GET /api/whatsapp/media/[mediaId]', () => {
   })
 
   it('rejects an unauthenticated caller before touching Meta', async () => {
-    h.user = null
+    h.role = null
     const res = await call()
     expect(res.status).toBe(401)
   })
@@ -129,5 +147,18 @@ describe('GET /api/whatsapp/media/[mediaId]', () => {
     h.accountId = null
     const res = await call()
     expect(res.status).toBe(403)
+  })
+
+  it('rejects a viewer, who may read the inbox but not pull media bytes', async () => {
+    h.role = 'viewer'
+    const res = await call()
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects a media id that is not a plain numeric id', async () => {
+    for (const bad of ['../debug_token', '12345/insights', 'abc123', '123']) {
+      const res = await call(bad)
+      expect(res.status).toBe(400)
+    }
   })
 })

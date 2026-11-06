@@ -1,4 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// The SSRF guard resolves hostnames over DNS, so stub it and drive the
+// verdict per test — the assertions below are about the string checks
+// that run before it.
+vi.mock('@/lib/webhooks/ssrf', () => ({
+  isDeliverableUrl: vi.fn(async () => true),
+}));
+
+import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
 import {
   generateWebhookSecret,
   serializeWebhookEndpoint,
@@ -45,28 +54,35 @@ describe('serializeWebhookEndpoint', () => {
 });
 
 describe('checkWebhookUrl', () => {
-  it('accepts https and normalizes', () => {
-    expect(checkWebhookUrl('  https://example.com/hook  ')).toEqual({
+  it('accepts https and normalizes', async () => {
+    expect(await checkWebhookUrl('  https://example.com/hook  ')).toEqual({
       ok: true,
       url: 'https://example.com/hook',
     });
   });
 
-  it('rejects http, non-URLs, and non-strings', () => {
-    expect(checkWebhookUrl('http://example.com/hook').ok).toBe(false);
-    expect(checkWebhookUrl('not a url').ok).toBe(false);
-    expect(checkWebhookUrl(123).ok).toBe(false);
+  it('rejects http, non-URLs, and non-strings', async () => {
+    expect((await checkWebhookUrl('http://example.com/hook')).ok).toBe(false);
+    expect((await checkWebhookUrl('not a url')).ok).toBe(false);
+    expect((await checkWebhookUrl(123)).ok).toBe(false);
   });
 
-  it('rejects URLs with embedded credentials with a specific message', () => {
+  it('rejects URLs with embedded credentials with a specific message', async () => {
     for (const url of [
       'https://user:pass@example.com/hook',
       'https://user@example.com/hook',
       'https://:secret@example.com/hook',
     ]) {
-      const result = checkWebhookUrl(url);
+      const result = await checkWebhookUrl(url);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.message).toMatch(/username or password/);
     }
+  });
+
+  it('rejects a URL whose host the SSRF guard refuses', async () => {
+    vi.mocked(isDeliverableUrl).mockResolvedValueOnce(false);
+    const result = await checkWebhookUrl('https://10.0.0.5/hook');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toMatch(/publicly-routable/);
   });
 });

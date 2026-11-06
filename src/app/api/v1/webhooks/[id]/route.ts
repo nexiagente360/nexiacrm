@@ -65,7 +65,7 @@ export async function PATCH(
     const updates: Record<string, unknown> = {};
 
     if ('url' in body) {
-      const urlCheck = checkWebhookUrl(body.url);
+      const urlCheck = await checkWebhookUrl(body.url);
       if (!urlCheck.ok) {
         return fail('bad_request', urlCheck.message, 400);
       }

@@ -5,23 +5,27 @@ const getPhoneNumberHealth = vi.fn()
 
 vi.mock('@/lib/auth/account', async () => {
   const actual = await vi.importActual<typeof import('@/lib/auth/account')>('@/lib/auth/account')
+  const ctx = async () => ({
+    userId: 'user-1',
+    accountId: 'acct-1',
+    role: 'viewer',
+    account: { id: 'acct-1', name: 'Acme' },
+    supabase: {
+      from: () => {
+        const b: Record<string, unknown> = {}
+        b.select = () => b
+        b.eq = () => b
+        b.maybeSingle = async () => ({ data: storedConfig, error: null })
+        return b
+      },
+    },
+  })
   return {
     ...actual,
-    getCurrentAccount: vi.fn(async () => ({
-      userId: 'user-1',
-      accountId: 'acct-1',
-      role: 'viewer',
-      account: { id: 'acct-1', name: 'Acme' },
-      supabase: {
-        from: () => {
-          const b: Record<string, unknown> = {}
-          b.select = () => b
-          b.eq = () => b
-          b.maybeSingle = async () => ({ data: storedConfig, error: null })
-          return b
-        },
-      },
-    })),
+    getCurrentAccount: vi.fn(ctx),
+    // The route gates on requireRole('agent'); the real implementation
+    // would build a real Supabase client out of the request cookies.
+    requireRole: vi.fn(ctx),
   }
 })
 

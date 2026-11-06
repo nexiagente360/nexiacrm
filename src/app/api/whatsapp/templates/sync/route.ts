@@ -28,6 +28,8 @@ const t = getT('Api')
 
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
+/** Origin the paging cursor is allowed to point back at. */
+const META_API_ORIGIN = new URL(META_API_BASE).origin
 
 interface MetaButton {
   type: string
@@ -179,7 +181,32 @@ export async function POST() {
 
     while (nextUrl && pageCount < PAGE_CAP) {
       pageCount++
-      const metaRes: Response = await fetch(nextUrl, {
+
+      // `paging.next` comes from Meta's RESPONSE BODY, and this fetch
+      // carries the account's access token — following it blindly would
+      // hand that bearer token to whatever host the cursor names. The
+      // check runs on every hop (not once before the loop): the first
+      // URL is ours, every later one is theirs. A cursor we can't parse,
+      // or that points off Graph, ends pagination instead of being
+      // fetched.
+      let pageUrl: URL
+      try {
+        pageUrl = new URL(nextUrl)
+      } catch {
+        console.warn(
+          '[whatsapp/templates/sync] ignoring an unparseable paging cursor',
+        )
+        break
+      }
+      if (pageUrl.origin !== META_API_ORIGIN) {
+        console.warn(
+          '[whatsapp/templates/sync] refusing a cross-origin paging cursor:',
+          pageUrl.origin,
+        )
+        break
+      }
+
+      const metaRes: Response = await fetch(pageUrl.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
 

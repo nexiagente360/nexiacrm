@@ -7,6 +7,7 @@
 // ============================================================
 
 import { randomBytes } from 'node:crypto';
+import { isDeliverableUrl } from './ssrf';
 
 /** Secret prefix — self-identifying, like `wacrm_live_` for keys. */
 export const WEBHOOK_SECRET_PREFIX = 'whsec_';
@@ -55,9 +56,20 @@ export type WebhookUrlCheck =
 /**
  * Validate a webhook target URL: must be a well-formed absolute
  * `https://` URL (an unencrypted `http://` sink would leak signed
- * event payloads).
+ * event payloads) that resolves to a publicly-routable host.
+ *
+ * The SSRF verdict is applied here — at registration/update time — as
+ * well as at delivery (`lib/webhooks/deliver.ts`). Rejecting early keeps
+ * internal targets out of the table and gives the caller an actionable
+ * error instead of an endpoint that silently fails every event; the
+ * delivery-time check stays as defence in depth, since a host can start
+ * resolving privately after it was registered.
+ *
+ * Async because the guard resolves the hostname over DNS.
  */
-export function checkWebhookUrl(input: unknown): WebhookUrlCheck {
+export async function checkWebhookUrl(
+  input: unknown
+): Promise<WebhookUrlCheck> {
   const invalid: WebhookUrlCheck = {
     ok: false,
     message: "'url' must be a valid https:// URL",
@@ -75,6 +87,12 @@ export function checkWebhookUrl(input: unknown): WebhookUrlCheck {
       ok: false,
       message:
         "'url' must not contain a username or password; authenticate deliveries with the signing secret instead",
+    };
+  }
+  if (!(await isDeliverableUrl(u.toString()))) {
+    return {
+      ok: false,
+      message: "'url' must resolve to a publicly-routable host",
     };
   }
   return { ok: true, url: u.toString() };

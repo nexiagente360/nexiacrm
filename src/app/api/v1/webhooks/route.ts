@@ -58,7 +58,7 @@ export async function POST(request: Request) {
       return fail('bad_request', 'Request body must be a JSON object', 400);
     }
 
-    const urlCheck = checkWebhookUrl(body.url);
+    const urlCheck = await checkWebhookUrl(body.url);
     if (!urlCheck.ok) {
       return fail('bad_request', urlCheck.message, 400);
     }
